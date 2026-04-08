@@ -25,12 +25,12 @@ def upload_csv():
         in: query
         type: string
         required: false
-        default: upsert
+        default: insert
         enum: [upsert, insert]
         description: |
           Upload strategy:
-          - **upsert** (default) — matches each row on (original_title, release_date). Updates the document if it exists, inserts if it doesn't. Use this to add new movies or correct existing records. Slower on large files since every write requires a read against the unique index.
-          - **insert** — bulk inserts rows directly using InsertOne. Rows that already exist (duplicate key on original_title + release_date) are silently skipped. No read-before-write, so significantly faster for large files (1 GB+). Use this when the CSV has no duplicates or you only want to add new records without touching existing ones.
+          - **upsert** — matches each row on (original_title, release_date). Updates the document if it exists, inserts if it doesn't. Use this to add new movies or correct existing records. Slower on large files since every write requires a read against the unique index.
+          - **insert** (default) — bulk inserts rows directly using InsertOne. Rows that already exist (duplicate key on original_title + release_date) are silently skipped. No read-before-write, so significantly faster for large files (1 GB+). Use this when the CSV has no duplicates or you only want to add new records without touching existing ones.
     responses:
       200:
         description: Upload complete

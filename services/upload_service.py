@@ -2,7 +2,7 @@ import csv
 import io
 import time
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pymongo import UpdateOne, InsertOne
 from pymongo.errors import BulkWriteError
 from config import AppConfig
@@ -26,6 +26,7 @@ class UploadService:
         total_rows = 0
         total_inserted = 0
         total_skipped = 0
+        total_updated = 0
         batch_num = 0
         futures = []
 
@@ -47,9 +48,9 @@ class UploadService:
                     # Backpressure: don't let parser run too far ahead of writers
                     if len(futures) >= self.max_workers * 2:
                         done, pending = self._drain_completed(futures)
-                        for inserted, skipped in done:
-                            total_inserted += inserted
-                            total_skipped += skipped
+                        for result_dict in done:
+                            total_inserted += result_dict["inserted_count"]
+                            total_updated += result_dict["updated_count"]
                         futures = pending
 
             if batch:
@@ -58,11 +59,12 @@ class UploadService:
 
             # Drain remaining
             for f in futures:
-                inserted, skipped = f.result()
-                total_inserted += inserted
-                total_skipped += skipped
+                result_dict = f.result()
+                total_inserted += result_dict["inserted_count"]
+                total_updated += result_dict["updated_count"]
         
-        return {"inserted": total_inserted, "skipped": total_skipped, "total_rows": total_rows, "updated": total_rows - total_inserted - total_skipped}
+        
+        return {"Total_insert": total_inserted, "skipped": total_rows - total_inserted - total_updated, "total_rows": total_rows, "updated": total_updated}
 
     def _drain_completed(self, futures):
         """Pull off any finished futures without blocking on the rest."""
@@ -75,7 +77,9 @@ class UploadService:
                 still_pending.append(f)
         # If nothing is done yet, block on the oldest one to make room
         if not done_results and still_pending:
-            done_results.append(still_pending.pop(0).result())
+            first_finished = next(as_completed(still_pending))
+            still_pending.remove(first_finished)
+            done_results.append(first_finished.result())
         return done_results, still_pending
 
     def _flush(self, batch: list, batch_num: int, update_entry : bool = True) -> tuple:
@@ -95,13 +99,16 @@ class UploadService:
                 ]   
             else:
                 operations = [InsertOne(record) for record in batch]
-            result = self.upload_repo.bulk_operation(operations)
+            result_dict = self.upload_repo.bulk_operation(operations)
+            inserted_count = result_dict["inserted_count"]
+            updated_count = result_dict["updated_count"]
             logger.info(f"Batch {batch_num} — {len(batch)} rows — {time.time() - t:.2f}s")
-            return result, 0
+            return {"inserted_count": inserted_count, "updated_count": updated_count}
         except BulkWriteError as e:
-            # logger.error(f"Batch {batch_num} bulk upsert error: {e}", exc_info=True)
-            inserted = e.details.get("nUpserted", 0) + e.details.get("nModified", 0) + e.details.get("nInserted", 0)
-            return inserted, len(batch) - inserted
+            inserted = e.details.get("nInserted", 0) + e.details.get("nUpserted", 0)
+            updated = e.details.get("nModified", 0)
+            skipped = len(batch) - inserted - updated
+            return {"inserted_count": inserted, "updated_count": updated, "skipped_count": skipped}
 
 
     def _parse_row(self, row: dict):
